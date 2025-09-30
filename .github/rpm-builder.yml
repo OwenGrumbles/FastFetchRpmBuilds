@@ -1,0 +1,88 @@
+name: Build RPMs per Major Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: almalinux:9
+      options: --user 0
+
+    steps:
+      # 1. Checkout this repo (to save builds)z
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+
+      # 2. Install tools
+      - name: Install RPM build tools & jq
+        run: |
+          dnf install -y rpm-build make gcc git wget jq
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          mkdir -p builds/built-binaries
+          mkdir -p builds/built-binaries-signatures
+
+      # 3. Get all tags from the public repo
+      - name: Get repo tags
+        run: |
+          REPO=" fastfetch-cli /fastfetch"
+          mkdir source
+          cd source
+          git init
+          git remote add origin https://github.com/$REPO.git
+          git fetch --tags
+          git tag -l > ../all-tags.txt
+
+      # 4. Filter major releases (example: v1.*, v2.*, etc.)
+      - name: Filter major releases
+        run: |
+          mkdir major-tags
+          cd ..
+          awk -F. '{print $1}' all-tags.txt | sort -u > major-tags/major.txt
+
+      # 5. Build RPMs for each major release
+      - name: Build RPM per major release
+        run: |
+          REPO="otheruser/source-repo"
+          while read major; do
+            echo "Building major release $major"
+            mkdir -p builds/built-binaries/$major
+            mkdir -p builds/built-binaries-signatures/$major
+
+            # Get latest tag in this major
+            latest_tag=$(grep "^$major" all-tags.txt | sort -V | tail -n1)
+            echo "Latest tag: $latest_tag"
+
+            # Clone repo at that tag
+            rm -rf source
+            git clone --branch $latest_tag https://github.com/$REPO.git source
+
+            # Build RPM
+            cd source
+            for spec in *.spec; do
+              rpmbuild -bb "$spec" --define "_topdir $HOME/rpmbuild"
+            done
+
+            # Copy RPMs to major version folder
+            cp -v ~/rpmbuild/RPMS/**/*.rpm ../builds/built-binaries/$major/
+
+            # Generate SHA256 checksums
+            cd ../builds/built-binaries/$major
+            sha256sum *.rpm > ../../built-binaries-signatures/$major/sha256sums.txt
+
+            cd ../
+          done < major-tags/major.txt
+
+      # 6. Upload artifacts (optional)
+      - name: Upload all RPMs
+        uses: actions/upload-artifact@v3
+        with:
+          name: rpm-artifacts
+          path: builds/built-binaries/**
+
+      - name: Upload all signatures
+        uses: actions/upload-artifact@v3
+        with:
+          name: rpm-signatures
+          path: builds/built-binaries-signatures/**
