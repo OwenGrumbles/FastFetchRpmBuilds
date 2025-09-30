@@ -9,6 +9,8 @@ jobs:
     container:
       image: almalinux:9
       options: --user 0
+    env:
+      REPO: fastfetch-cli/fastfetch
 
     steps:
       # 1. Checkout this repo (to save builds)z
@@ -26,8 +28,8 @@ jobs:
       # 3. Get all tags from the public repo
       - name: Get repo tags
         run: |
-          # set the public repo to fetch tags from (owner/repo)
-          REPO="fastfetch-cli/fastfetch"
+          # using job-level REPO: $REPO
+          echo "Fetching tags from https://github.com/${REPO}.git"
           mkdir -p source
           cd source
           git init
@@ -46,8 +48,7 @@ jobs:
       # 5. Build RPMs for each major release
       - name: Build RPM per major release
         run: |
-          # repo to clone for building (owner/repo)
-          REPO="fastfetch-cli/fastfetch"
+          # using job-level REPO: $REPO
           while read -r major; do
             echo "Building major release $major"
             mkdir -p builds/built-binaries/$major
@@ -97,13 +98,13 @@ jobs:
 
       # 6. Upload artifacts (optional)
       - name: Upload all RPMs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: rpm-artifacts
           path: builds/built-binaries/**
 
       - name: Upload all signatures
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: rpm-signatures
           path: builds/built-binaries-signatures/**
