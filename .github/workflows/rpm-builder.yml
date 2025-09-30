@@ -26,12 +26,14 @@ jobs:
       # 3. Get all tags from the public repo
       - name: Get repo tags
         run: |
-          REPO=" fastfetch-cli /fastfetch"
-          mkdir source
+          # set the public repo to fetch tags from (owner/repo)
+          REPO="fastfetch-cli/fastfetch"
+          mkdir -p source
           cd source
           git init
-          git remote add origin https://github.com/$REPO.git
-          git fetch --tags
+          git remote add origin https://github.com/${REPO}.git
+          # fetch tags only (shallow) to speed up
+          git fetch --tags --no-recurse-submodules --depth=1 origin
           git tag -l > ../all-tags.txt
 
       # 4. Filter major releases (example: v1.*, v2.*, etc.)
@@ -44,34 +46,53 @@ jobs:
       # 5. Build RPMs for each major release
       - name: Build RPM per major release
         run: |
-          REPO="otheruser/source-repo"
-          while read major; do
+          # repo to clone for building (owner/repo)
+          REPO="fastfetch-cli/fastfetch"
+          while read -r major; do
             echo "Building major release $major"
             mkdir -p builds/built-binaries/$major
             mkdir -p builds/built-binaries-signatures/$major
 
-            # Get latest tag in this major
-            latest_tag=$(grep "^$major" all-tags.txt | sort -V | tail -n1)
+            # Get latest tag in this major (match prefix like v1. or 1.)
+            latest_tag=$(grep "^${major}" all-tags.txt | sort -V | tail -n1 || true)
+            if [ -z "$latest_tag" ]; then
+              echo "No tags found for major $major; skipping"
+              continue
+            fi
             echo "Latest tag: $latest_tag"
 
             # Clone repo at that tag
             rm -rf source
-            git clone --branch $latest_tag https://github.com/$REPO.git source
+            git clone --branch "$latest_tag" --depth 1 "https://github.com/${REPO}.git" source
 
-            # Build RPM
-            cd source
-            for spec in *.spec; do
+            # Build RPM(s)
+            cd source || exit 1
+            shopt -s nullglob
+            specs=( *.spec )
+            if [ ${#specs[@]} -eq 0 ]; then
+              echo "No .spec files found in repository at tag $latest_tag; skipping"
+              cd ..
+              continue
+            fi
+            for spec in "${specs[@]}"; do
               rpmbuild -bb "$spec" --define "_topdir $HOME/rpmbuild"
             done
+            cd ..
 
-            # Copy RPMs to major version folder
-            cp -v ~/rpmbuild/RPMS/**/*.rpm ../builds/built-binaries/$major/
+            # Copy any built RPMs to major version folder (use find to avoid glob issues)
+            mkdir -p builds/built-binaries/$major
+            find "$HOME/rpmbuild/RPMS" -type f -name "*.rpm" -exec cp -v --parents '{}' builds/built-binaries/$major/ \; || true
 
-            # Generate SHA256 checksums
-            cd ../builds/built-binaries/$major
-            sha256sum *.rpm > ../../built-binaries-signatures/$major/sha256sums.txt
+            # Generate SHA256 checksums only if RPMs exist
+            target_dir="builds/built-binaries/$major"
+            sig_dir="builds/built-binaries-signatures/$major"
+            mkdir -p "$sig_dir"
+            if find "$target_dir" -maxdepth 2 -type f -name "*.rpm" | read; then
+              (cd "$target_dir" && sha256sum $(find . -type f -name "*.rpm" | sed 's|^./||') ) > "$sig_dir/sha256sums.txt" || true
+            else
+              echo "No RPMs to checksum for $major" > "$sig_dir/sha256sums.txt"
+            fi
 
-            cd ../
           done < major-tags/major.txt
 
       # 6. Upload artifacts (optional)
